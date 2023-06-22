@@ -6,5 +6,6 @@ namespace: dev
 
 resources:
 - repo.yaml
+- ../../overlays/logstash-index-iis # many more like this
 - sqs-capdev
 - sqs-awsqa

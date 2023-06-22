@@ -1,0 +1,229 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+
+nameSuffix: -index-iis
+
+resources:
+- ../../base/logstash
+              # topics_pattern => "(nonprod|wip|dev|qa)-logs-.*"
+              # https://github.com/Cyb3rWard0g/HELK/issues/73
+              # poll_timeout_ms => 10000
+              # Enable after Kafka 2.4 upgrade
+                # rename => [ "cs_useragent", "agent" ]
+              #Conditional to clean Developerapi requests (catgegories.svc)
+                    #Find the last / to end of string if categories.svc exists
+                    #Remove from the beginning of string to the / after categories.svc
+                    #Remove everything to end of string for BAPI url's but leave mediatype
+                    #Remove everything to end of string for APISyndication url's but leave mediatype
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/releaseName
+      value: logstash-index-iis
+    - op: add
+      path: /spec/values/logstashConfig
+      value:
+        logstash.yml: |
+          http.host: "0.0.0.0"
+    - op: add
+      path: /spec/values/logstashPipeline
+      value:
+        logstash.conf: |
+          input {
+            kafka {
+              bootstrap_servers => "${KAFKA_SERVERS}"
+              # topics_pattern => "(nonprod|wip|dev|qa)-logs-.*"
+              topics_pattern => "${IIS_TOPICS_PATTERN}"
+              metadata_max_age_ms => 60000
+              group_id => "${GROUP_ID}"
+              client_id => "${HOSTNAME}"
+              auto_offset_reset => earliest
+              decorate_events => true
+              security_protocol => SSL
+              # https://github.com/Cyb3rWard0g/HELK/issues/73
+              session_timeout_ms => "10000"
+              max_poll_records => "1000"
+              max_poll_interval_ms => "600000"
+              # poll_timeout_ms => 10000
+              fetch_min_bytes => "1"
+              request_timeout_ms => "305000"
+              consumer_threads => 4
+              codec => json
+              # Enable after Kafka 2.4 upgrade
+              partition_assignment_strategy => cooperative_sticky
+              tags => ['k8s', 'iis', "${HOSTNAME}", "${EXTRA_TAG}"]
+            }
+          }
+          filter {
+            mutate{
+              add_field => {
+                "[kafka][topic_name]" => "%{[@metadata][kafka][topic]}"
+                "[kafka][consumer_group]" => "%{[@metadata][kafka][consumer_group]}"
+                "[kafka][partition]" => "%{[@metadata][kafka][partition]}"
+                "[kafka][offset]" => "%{[@metadata][kafka][offset]}"
+              }
+            }
+            if [log_category] == "iis" {
+              if [message] =~ "^#" { drop {} }
+              grok {
+                match => [
+                  "message", "%{TIMESTAMP_ISO8601:logtime} %{IPORHOST:hostname} %{URIPROTO:cs_method} %{URIPATH:cs_stem} (?:%{NOTSPACE:cs_query}|-) %{NUMBER:src_port} %{NOTSPACE:cs_username} %{IP:clientip} %{NOTSPACE:cs_useragent} %{NUMBER:sc_status} %{NUMBER:sc_subresponse} %{NUMBER:sc_win32_status} %{NUMBER:timetaken}",
+                  "message", "%{TIMESTAMP_ISO8601:logtime} %{IPORHOST:hostname} %{URIPROTO:cs_method} %{URIPATH:cs_stem} (?:%{NOTSPACE:cs_query}|-) %{NUMBER:src_port} %{NOTSPACE:cs_username} %{IP:clientip} %{NOTSPACE:cs_useragent} %{NOTSPACE:cs_referrer} %{NUMBER:sc_status} %{NUMBER:sc_subresponse} %{NUMBER:sc_win32_status} %{NUMBER:timetaken}",
+                  "message", "%{TIMESTAMP_ISO8601:logtime}(?: %{DATA:ServiceName}| -)? %{IPORHOST:hostname} %{IP:s_ip} %{URIPROTO:cs_method} %{NOTSPACE:cs_stem} (?:%{NOTSPACE:cs_query}|-)? %{NUMBER:src_port} (?:%{NOTSPACE:cs_username}|-) %{IP:clientip} %{NOTSPACE:httpversion} %{NOTSPACE:cs_useragent} (?:%{NOTSPACE:cookie}|-) (?:%{NOTSPACE:cs_referrer}|-) (?:%{NOTSPACE:cs_host}|-) %{NUMBER:sc_status} %{NUMBER:sc_subresponse} %{NUMBER:sc_win32_status} %{NUMBER:bytessent} %{NUMBER:bytesreceived} %{NUMBER:timetaken}",
+                  "message", "%{TIMESTAMP_ISO8601:logtime} (?<clientip>%{IP}|-) (?<cport>%{NUMBER}|-) (?:%{NOTSPACE:cs_username}|-) (?:%{NOTSPACE:ServiceName}|-) (?:%{IPORHOST:hostname}|-) (?:%{NOTSPACE:cs_host}|-) %{IP:s_ip} (?:%{NUMBER:src_port}|-) (?<cs_method>%{NOTSPACE}|-) (?:%{NOTSPACE:cs_stem}|-) (?<sc_status>%{NUMBER}|-) %{NUMBER:sc_win32_status} %{NUMBER:sc_subresponse} %{NUMBER:bytessent} %{NUMBER:bytesreceived} %{NUMBER:timetaken} %{NOTSPACE:session} %{NOTSPACE:path} %{NOTSPACE:debug}",
+                  "message", "(?:%{TIMESTAMP_ISO8601:logtime}|%{TIME:EventTime}) %{IP:clientip}( %{NOTSPACE:cs_username} %{NOTSPACE:ServiceName} %{IPORHOST:hostname} %{IP:s_ip} %{NUMBER:src_port} (?<cs_method>%{NOTSPACE}|-))? %{NOTSPACE:cs_stem}( %{NOTSPACE:cs_query} )? %{NOTSPACE:sc_status}( %{NOTSPACE:sc_win32_status} %{NUMBER:bytessent} %{NUMBER:bytesreceived} %{NUMBER:timetaken} %{NOTSPACE:protocol} %{NOTSPACE:cs_host} %{NOTSPACE:cs_useragent} %{NOTSPACE:cookie} %{NOTSPACE:cs_referrer})?",
+                  "message", "%{TIMESTAMP_ISO8601:logtime}\s?(?:\"%{DATA:ServiceName}\"|-)? \"%{IPORHOST:hostname}\" %{IP:s_ip} %{URIPROTO:cs_method} \"%{DATA:cs_stem}\" %{NOTSPACE:cs_query}? %{NUMBER:src_port} (?<cs_username>:%{NOTSPACE}|-) (?:\"%{IP:clientip}\"|-) \"%{NOTSPACE:httpversion}\" (?:\"%{DATA:cs_useragent}\"|-) (?:\"%{DATA:cookie}\"|-) (?:\"%{NOTSPACE:cs_referrer}\"|-) (?:\"%{NOTSPACE:cs_host}\"|-) %{NUMBER:sc_status} %{NUMBER:sc_subresponse} %{NUMBER:sc_win32_status} %{NUMBER:bytessent} %{NUMBER:bytesreceived} %{NUMBER:timetaken}",
+                  "message", "%{TIMESTAMP_ISO8601:logtime}\s?(?:\"%{DATA:ServiceName}\"|-)? \"%{IPORHOST:hostname}\" %{IP:s_ip} %{URIPROTO:cs_method} %{NOTSPACE:cs_stem} %{NOTSPACE:cs_query}? %{NUMBER:src_port} (?<cs_username>:%{NOTSPACE}|-) (?:\"%{IP:clientip}\"|-) \"%{NOTSPACE:httpversion}\" (?:\"%{DATA:cs_useragent}\"|-) (?:\"%{DATA:cookie}\"|-) (?:\"%{NOTSPACE:cs_referrer}\"|-) (?:\"%{NOTSPACE:cs_host}\"|-) %{NUMBER:sc_status} %{NUMBER:sc_subresponse} %{NUMBER:sc_win32_status} %{NUMBER:bytessent} %{NUMBER:bytesreceived} %{NUMBER:timetaken}"
+                ]
+              }
+              date {
+                match => [ "logtime", "YYYY-MM-dd HH:mm:ss", "YYYY-MM-dd HH:mm:ss.SSS" ]
+                timezone => "UTC"
+              }
+              mutate {
+                lowercase => [ "cs_username", "nxhostname", "app", "apenv", "host", "hostname", "site" ]
+              }
+              if ! [clientip] {
+                mutate {
+                  add_field => [ "clientip", "127.0.0.0" ]
+                }
+              }
+              if [cs_query] {
+                urldecode {
+                  field => 'cs_query'
+                }
+              }
+              if "UA" in [tags] {
+                if [ua][major] {
+                  mutate {
+                    add_field => [ "browser_version", "%{[name]} %{[ua][major]}.%{[ua][minor]}"]
+                  }
+                }
+                mutate {
+                  rename => [ "name", "browser_name" ]
+                }
+              }
+              mutate {
+                add_field => [ "src_ip", "%{clientip}" ]
+                rename => [ "cs_method", "method" ]
+                rename => [ "cs_stem", "request" ]
+                # rename => [ "cs_useragent", "agent" ]
+                rename => [ "cs_username", "username" ]
+                rename => [ "cs_query", "query" ]
+                rename => [ "cs_referrer", "referrer" ]
+                rename => [ "sc_status", "response" ]
+                rename => [ "timetaken", "time_request" ]
+                rename => [ "s_ip", "source_host_ip" ]
+                rename => [ "ServiceName", "iis_servicename" ]
+              }
+              #Conditional to clean Developerapi requests (catgegories.svc)
+              if [app] == "apiweb" and [request] =~ /^.*categories\.svc/ {
+                mutate {
+                  add_field => ["categoryid", "%{request}"]
+                  add_field => ["apirequest", "%{request}"]
+                }
+                mutate {
+                  gsub => [
+                    #Find the last / to end of string if categories.svc exists
+                    "apirequest", "(?<=categories\.svc).*", ""
+                  ]
+                }
+                mutate {
+                  gsub => [
+                    #Remove from the beginning of string to the / after categories.svc
+                    "categoryid", "^.*categories\.svc\/", ""
+                  ]
+                }
+              }
+              if [app] == "bapi" {
+                mutate {
+                  add_field => ["apirequest", "%{request}"]
+                  gsub => [
+                    #Remove everything to end of string for BAPI url's but leave mediatype
+                    "apirequest", "(?<=BinaryAPIService\/photo|graphic|video).*", ""
+                  ]
+                }
+              }
+              if [app] == "apisyndication" {
+                mutate {
+                  add_field => ["apirequest", "%{request}"]
+                  gsub => [
+                    #Remove everything to end of string for APISyndication url's but leave mediatype
+                    "apirequest", "(?<=AP\.Distro\.ContentBroker\/repository/Main|Thumbnail|Preview).*", ""
+                  ]
+                }
+              }
+            }
+            if "_grokparsefailure" in [tags] {
+              mutate {
+                add_tag => [ "drop" ]
+              }
+            }
+            if "UA" in [tags] {
+              if [device] == "Other" {
+                mutate {
+                  remove_field => [ "device" ]
+                }
+              }
+              if [browser_name] == "Other" {
+                mutate {
+                  remove_field => [ "browser_name" ]
+                }
+              }
+              if [os] == "Other" {
+                mutate {
+                  remove_field => [ "os" ]
+                }
+              }
+              if [os_name] == "Other" {
+                mutate {
+                  remove_field => [ "os_name" ]
+                }
+              }
+              mutate {
+                remove_field => [ "major", "minor", "device", "patch" ]
+              }
+            }
+            if [log_category] == "iis" {
+              mutate {
+                remove_field => [ "SourceModuleName", "SourceModuleType", "EventReceivedTime", "clientip", "hostname", "logtime", "resolve_hostname", "syslog_message", "cs_host", "sc_subresponse", "sc_win32_status" ]
+              }
+            }
+            if ! [app] {
+              mutate {
+                add_field => [ 'app', 'noapp' ]
+              }
+            }
+            mutate {
+              gsub => [ "app", " ", "_" ]
+            }
+            mutate {
+              lowercase => ['app']
+            }
+            if [app] == "electionsapi" {
+              mutate {
+                rename => {
+                  "cacheKeys_t" => "cacheKeys_test"
+                  "states_built_t" => "states_built_test"
+                  "skipped_min_dates_t" => "skipped_min_dates_test"
+                }
+              }
+            }
+          }
+          output {
+            opensearch {
+              hosts                        => [ "${OS_HOST}" ]
+              index                        => "${OS_INDEX}"
+              user                         => "${OS_USER}"
+              password                     => "${OS_PASSWORD}"
+              ssl                          => true
+              ssl_certificate_verification => false
+              action                       => "create"
+            }
+          }
+  target:
+    group: helm.toolkit.fluxcd.io
+    kind: HelmRelease
+    name: logstash
+    version: v2beta1
