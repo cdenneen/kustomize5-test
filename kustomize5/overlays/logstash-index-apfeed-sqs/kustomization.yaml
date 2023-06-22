@@ -1,0 +1,107 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+nameSuffix: -index-apfeed-sqs
+
+resources:
+- ../../base/logstash
+patches:
+- patch: |-
+    - op: replace
+      path: /spec/releaseName
+      value: logstash-index-apfeed-sqs
+    - op: add
+      path: /spec/values/logstashConfig
+      value:
+        logstash.yml: |
+          http.host: "0.0.0.0"
+    - op: add
+      path: /spec/values/logstashPipeline
+      value:
+        logstash.conf: |
+          input {
+            sqs {
+              id                         => "${SQS_INPUT_ID}"
+              queue                      => "${SQS_QUEUE}"
+              region                     => "${SQS_REGION}"
+              add_field                  => ['log_category', 'apfeed']
+              add_field                  => ['apenv',"${APENV}"]
+              tags                       => ["sqs","${AWS_ACCOUNT}"]
+              role_arn                   => "${ROLE_ARN}"
+              role_session_name          => "${HOSTNAME}"
+            }
+          }
+          filter {
+            mutate {
+              rename => {
+                "Message"          => "message"
+                "Type"             => "[sqs][Type]"
+                "UnsubscribeURL"   => "[sqs][UnsubscribeURL]"
+                "MessageId"        => "[sqs][MessageId]"
+                "Signature"        => "[sqs][Signature]"
+                "SignatureVersion" => "[sqs][SignatureVersion]"
+                "SigningCertURL"   => "[sqs][SigningCertURL]"
+                "Subject"          => "[sqs][Subject]"
+                "Timestamp"        => "[sqs][Timestamp]"
+                "TopicArn"         => "[sqs][TopicArn]"
+              }
+            }
+            mutate {
+              gsub => [ "message", "[\\]", "" ]
+            }
+            grok {
+              match     => [ "message", "%{TIMESTAMP_ISO8601:timestamp}(\|)%{WORD:level}(\|)(?<source>[^\|]+)(\|)(?<kvpairs>.*)" ]
+            }
+            fingerprint {
+              source       => [ "message" ]
+              remove_field => [ "message" ]
+            }
+            date {
+              match        => [ "timestamp", "yyyy-MM-dd HH:mm:ss.SSSS",
+                                "ISO8601" ]
+              locale       => "en-US"
+              timezone     => UTC
+              add_tag      => [ "utc" ]
+              remove_field => [ "timestamp" ]
+            }
+            kv {
+              source       => "kvpairs"
+              trim_key     => "_"
+              remove_field => [ "kvpairs" ]
+            }
+            if [params] {
+              json {
+                source       => 'params'
+                remove_field => [ 'params' ]
+              }
+            }
+            if [tag] {
+              urldecode {
+                field => "tag"
+              }
+              kv {
+                source       => "tag"
+                field_split  => "|"
+                remove_field => [ "tag" ]
+              }
+            }
+            mutate {
+              gsub => [ "client_ip", "[\"]", "" ]
+            }
+          }
+          output {
+            opensearch {
+              hosts                        => [ "${OS_HOST}" ]
+              index                        => "${OS_INDEX}"
+              user                         => "${OS_USER}"
+              password                     => "${OS_PASSWORD}"
+              ssl                          => true
+              ssl_certificate_verification => false
+              action                       => "create"
+            }
+          }
+  target:
+    group: helm.toolkit.fluxcd.io
+    kind: HelmRelease
+    name: logstash
+    version: v2beta1

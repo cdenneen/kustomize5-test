@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+
+resources:
+- release.yaml
+
+labels:
+- includeSelectors: true
+  pairs:
+    app: logstash
+patches:
+- patch: |-
+    - op: add
+      path: /spec/values/antiAffinity
+      value: "hard"
+    - op: add
+      path: /spec/values/securityContext
+      value:
+        runAsUser: 1000
+        runAsGroup: 1000
+        readOnlyRootFilesystem: true
+    - op: add
+      path: /spec/values/extraVolumes
+      value:
+        - name: temp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+    - op: add
+      path: /spec/values/extraVolumeMounts
+      value:
+        - name: temp
+          mountPath: /tmp
+        - name: data
+          mountPath: /usr/share/logstash/data
+    - op: add
+      path: /spec/values/image
+      value: repo.jfrog.io/docker/ap/logstash/logstash-ap
+    - op: add
+      path: /spec/values/imageTag
+      value: 7.17.8-2
+  target:
+    group: helm.toolkit.fluxcd.io
+    kind: HelmRelease
+    name: logstash
+    version: v2beta1

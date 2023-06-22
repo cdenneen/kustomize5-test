@@ -1,0 +1,129 @@
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  labels:
+    app: logstash
+  name: logstash-index-apfeed-sqs-capdev
+spec:
+  chart:
+    spec:
+      chart: logstash
+      sourceRef:
+        kind: HelmRepository
+        name: elastic
+      version: ^7.0.0
+  interval: 1h0m0s
+  releaseName: logstash-index-apfeed-sqs
+  values:
+    antiAffinity: hard
+    extraVolumeMounts:
+    - mountPath: /tmp
+      name: temp
+    - mountPath: /usr/share/logstash/data
+      name: data
+    extraVolumes:
+    - emptyDir: {}
+      name: temp
+    - emptyDir: {}
+      name: data
+    image: associatedpress.jfrog.io/docker/ap/logstash/logstash-ap
+    imageTag: 7.17.8-2
+    logstashConfig:
+      logstash.yml: |
+        http.host: "0.0.0.0"
+    logstashPipeline:
+      logstash.conf: |-
+        input {
+          sqs {
+            id                         => "${SQS_INPUT_ID}"
+            queue                      => "${SQS_QUEUE}"
+            region                     => "${SQS_REGION}"
+            add_field                  => ['log_category', 'apfeed']
+            add_field                  => ['apenv',"${APENV}"]
+            tags                       => ["sqs","${AWS_ACCOUNT}"]
+            role_arn                   => "${ROLE_ARN}"
+            role_session_name          => "${HOSTNAME}"
+          }
+        }
+        filter {
+          mutate {
+            rename => {
+              "Message"          => "message"
+              "Type"             => "[sqs][Type]"
+              "UnsubscribeURL"   => "[sqs][UnsubscribeURL]"
+              "MessageId"        => "[sqs][MessageId]"
+              "Signature"        => "[sqs][Signature]"
+              "SignatureVersion" => "[sqs][SignatureVersion]"
+              "SigningCertURL"   => "[sqs][SigningCertURL]"
+              "Subject"          => "[sqs][Subject]"
+              "Timestamp"        => "[sqs][Timestamp]"
+              "TopicArn"         => "[sqs][TopicArn]"
+            }
+          }
+          mutate {
+            gsub => [ "message", "[\\]", "" ]
+          }
+          grok {
+            match     => [ "message", "%{TIMESTAMP_ISO8601:timestamp}(\|)%{WORD:level}(\|)(?<source>[^\|]+)(\|)(?<kvpairs>.*)" ]
+          }
+          fingerprint {
+            source       => [ "message" ]
+            remove_field => [ "message" ]
+          }
+          date {
+            match        => [ "timestamp", "yyyy-MM-dd HH:mm:ss.SSSS",
+                              "ISO8601" ]
+            locale       => "en-US"
+            timezone     => UTC
+            add_tag      => [ "utc" ]
+            remove_field => [ "timestamp" ]
+          }
+          kv {
+            source       => "kvpairs"
+            trim_key     => "_"
+            remove_field => [ "kvpairs" ]
+          }
+          if [params] {
+            json {
+              source       => 'params'
+              remove_field => [ 'params' ]
+            }
+          }
+          if [tag] {
+            urldecode {
+              field => "tag"
+            }
+            kv {
+              source       => "tag"
+              field_split  => "|"
+              remove_field => [ "tag" ]
+            }
+          }
+          mutate {
+            gsub => [ "client_ip", "[\"]", "" ]
+          }
+        }
+        output {
+          # stdout {
+          #   codec => rubydebug
+          # }
+          # elasticsearch {
+          #   hosts           => [ "${ES_HOST}" ]
+          #   index           => "${ES_INDEX}"
+          #   document_type   => "_doc"
+          #   manage_template => "false"
+          # }
+          opensearch {
+            hosts                        => [ "${OS_HOST}" ]
+            index                        => "${OS_INDEX}"
+            user                         => "${OS_USER}"
+            password                     => "${OS_PASSWORD}"
+            ssl                          => true
+            ssl_certificate_verification => false
+            action                       => "create"
+          }
+        }
+    securityContext:
+      readOnlyRootFilesystem: true
+      runAsGroup: 1000
+      runAsUser: 1000

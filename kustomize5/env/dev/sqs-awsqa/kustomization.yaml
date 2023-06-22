@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+
+nameSuffix: -awsqa
+
+resources:
+- ../../../overlays/logstash-index-apfeed-sqs
+patches:
+- patch: |-
+    - op: add
+      path: /spec/values/rbac
+      value:
+        create: true
+    - op: replace
+      path: /spec/releaseName
+      value: logstash-index-apfeed-sqs-awsqa
+  target:
+    group: helm.toolkit.fluxcd.io
+    kind: HelmRelease
+    name: logstash-index-apfeed-sqs-awsqa
+    version: v2beta1

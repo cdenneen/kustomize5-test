@@ -1,0 +1,55 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+bases:
+  - ../../../overlays/logstash-index-apfeed-sqs
+
+nameSuffix: '-capdev'
+
+patchesJson6902:
+- target:
+    group: helm.toolkit.fluxcd.io
+    version: v2beta1
+    kind: HelmRelease
+    name: logstash-index-apfeed-sqs-capdev
+  patch: |-
+    - op: add
+      path: /spec/values/rbac
+      value:
+        create: true
+        serviceAccountAnnotations:
+          eks.amazonaws.com/role-arn: arn:aws:iam::838870929816:role/logstash-index-apfeed
+    - op: add
+      path: /spec/values/imagePullSecrets
+      value:
+        - name: jfrog-docker
+    - op: add
+      path: /spec/values/imagePullPolicy
+      value: Always
+    - op: replace
+      path: /spec/releaseName
+      value: logstash-index-apfeed-sqs-capdev
+    - op: add
+      path: /spec/values/extraEnvs
+      value:
+        - name: SQS_INPUT_ID
+          value: logstashinputqueue_capdev
+        - name: SQS_QUEUE
+          value: logstash-dev-apcapdevelopment-us-east-1-logstashinputqueue
+        - name: SQS_REGION
+          value: us-east-1
+        - name: APENV
+          value: dev
+        - name: AWS_ACCOUNT
+          value: capdev
+        - name: ROLE_ARN
+          value: arn:aws:iam::222259241209:role/logstash-apss-sqs
+        - name: OS_HOST
+          value: https://nonprod.logs.apsharedservices.com:443
+        - name: OS_INDEX
+          value: filebeat-%{log_category}-ds
+        - name: OS_USER
+          value: lsuser
+        - name: OS_PASSWORD
+          value: Logstash7!
